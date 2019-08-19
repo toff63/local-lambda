@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -8,26 +9,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/urfave/cli"
 )
 
 var binary string
-
-type elb struct {
-	TargetGroupArn string `json:"targetGroupArn"`
-}
-type requestContext struct {
-	Elb elb `json:"elb"`
-}
-type event struct {
-	RequestContext  requestContext    `json:"requestContext"`
-	HTTPMethod      string            `json:"httpMethod"`
-	Path            string            `json:"path"`
-	Headers         map[string]string `json:"headers"`
-	IsBase64Encoded bool              `json:"isBase64Encoded"`
-	Body            string            `json:"body"`
-}
 
 func main() {
 	app := cli.NewApp()
@@ -57,9 +45,34 @@ func main() {
 // LambdaServer is the entrypoint
 func LambdaServer(w http.ResponseWriter, r *http.Request) {
 	event := buildEvent(r)
-	cmd := exec.Command("docker", "run", "--rm", "-v", fmt.Sprintf("%s:/var/task", os.Getenv("PWD")), "lambci/lambda:go1.x", "main", event)
-	o, _ := cmd.CombinedOutput()
-	fmt.Printf("%s\n", o)
+	cmd := exec.Command("docker", "run", "--rm", "-v", fmt.Sprintf("%s:/var/task", os.Getenv("PWD")), "lambci/lambda:go1.x", binary, event)
+
+	var b bytes.Buffer
+	cmd.Stdout = &b
+	cmd.Stderr = &b
+
+	if err := cmd.Start(); err != nil {
+		log.Fatal(err)
+	}
+	// Wait for the process to finish or kill it after a timeout (whichever happens first):
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case <-time.After(5 * time.Second):
+		if err := cmd.Process.Kill(); err != nil {
+			log.Fatal("failed to kill process: ", err)
+		}
+		fmt.Printf("%s\n", b.Bytes())
+		log.Println("process killed as timeout reached")
+	case err := <-done:
+		if err != nil {
+			log.Fatalf("process finished with error = %v", err)
+		}
+		fmt.Printf("%s\n", b.Bytes())
+		log.Print("process finished successfully")
+	}
 }
 
 func buildEvent(r *http.Request) string {
@@ -68,9 +81,9 @@ func buildEvent(r *http.Request) string {
 		panic(fmt.Sprintf("Failed to read http request body: %v\n", err))
 	}
 
-	event := event{
-		RequestContext: requestContext{
-			Elb: elb{
+	event := events.ALBTargetGroupRequest{
+		RequestContext: events.ALBTargetGroupRequestContext{
+			ELB: events.ELBContext{
 				TargetGroupArn: "arn:aws:elasticloadbalancing:region:123456789012:targetgroup/my-target-group/6d0ecf831eec9f09",
 			},
 		},

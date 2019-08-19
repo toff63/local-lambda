@@ -2,6 +2,14 @@
 
 
 [[projects]]
+  digest = "1:ec49ab6d44f187df8a1e2e897aef3561a77b2f012e56d0cc42f6a9bdfb9857f9"
+  name = "github.com/aws/aws-lambda-go"
+  packages = ["events"]
+  pruneopts = "UT"
+  revision = "f7dba3f79cca0ce775c07c38db419e0da8d7ca64"
+  version = "v1.12.1"
+
+[[projects]]
   digest = "1:ca4df663ad76879ad38dbd736493679cbb1aa596c6d479fd9fc5e959e5ceb4fb"
   name = "github.com/urfave/cli"
   packages = ["."]
@@ -12,6 +20,9 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  input-imports = ["github.com/urfave/cli"]
+  input-imports = [
+    "github.com/aws/aws-lambda-go/events",
+    "github.com/urfave/cli",
+  ]
   solver-name = "gps-cdcl"
   solver-version = 1
