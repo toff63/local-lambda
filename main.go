@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -38,21 +41,39 @@ func main() {
 	err := app.Run(os.Args)
 	if err != nil {
 		log.Fatal(err)
-
 	}
 }
 
 // LambdaServer is the entrypoint
 func LambdaServer(w http.ResponseWriter, r *http.Request) {
 	event := buildEvent(r)
+	resp, err := execute(event)
+	if err != nil {
+		log.Fatalf("Failed to execute with error = %v", err)
+	}
+	for key, value := range resp.Headers {
+		w.Header().Set(key, value)
+	}
+	for key, values := range resp.MultiValueHeaders {
+		for _, v := range values {
+			w.Header().Set(key, v)
+		}
+	}
+	io.WriteString(w, resp.Body)
+	w.WriteHeader(resp.StatusCode)
+}
+
+func execute(event string) (events.ALBTargetGroupResponse, error) {
 	cmd := exec.Command("docker", "run", "--rm", "-v", fmt.Sprintf("%s:/var/task", os.Getenv("PWD")), "lambci/lambda:go1.x", binary, event)
 
-	var b bytes.Buffer
-	cmd.Stdout = &b
-	cmd.Stderr = &b
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	var er bytes.Buffer
+	cmd.Stderr = &er
 
 	if err := cmd.Start(); err != nil {
 		log.Fatal(err)
+		return events.ALBTargetGroupResponse{}, errors.New("Failed to start Process")
 	}
 	// Wait for the process to finish or kill it after a timeout (whichever happens first):
 	done := make(chan error, 1)
@@ -63,16 +84,32 @@ func LambdaServer(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(5 * time.Second):
 		if err := cmd.Process.Kill(); err != nil {
 			log.Fatal("failed to kill process: ", err)
+			return events.ALBTargetGroupResponse{}, errors.New("Failed to kill Process after timeout")
 		}
-		fmt.Printf("%s\n", b.Bytes())
+		fmt.Printf("%s\n", er.Bytes())
+		fmt.Printf("%s\n", out.Bytes())
 		log.Println("process killed as timeout reached")
+		return events.ALBTargetGroupResponse{}, errors.New("Process took too long to process")
 	case err := <-done:
 		if err != nil {
 			log.Fatalf("process finished with error = %v", err)
+			return events.ALBTargetGroupResponse{}, errors.New("Process took too long to process")
 		}
-		fmt.Printf("%s\n", b.Bytes())
-		log.Print("process finished successfully")
+		fmt.Printf("%s\n", er.Bytes())
+
+		o := out.String()
+		fmt.Printf("%s\n", o)
+
+		lines := strings.Split(o, "\n")
+		j := lines[len(lines)-2]
+		var response events.ALBTargetGroupResponse
+		err = json.Unmarshal([]byte(j), &response)
+		if err != nil {
+			return events.ALBTargetGroupResponse{}, fmt.Errorf("Could not parse response %s due to error: %v", j, err)
+		}
+		return response, nil
 	}
+
 }
 
 func buildEvent(r *http.Request) string {
